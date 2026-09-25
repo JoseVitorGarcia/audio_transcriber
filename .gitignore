@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+
+audios/*
+transcricoes/*
+temp/*
+models/
+*.zip
+.claude/
+.env
+.env.*

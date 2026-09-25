@@ -1,0 +1,24 @@
+services:
+  redis:
+    image: redis:7
+    container_name: redis
+
+  producer:
+    build: .
+    command: python producer.py
+    volumes:
+      - ./audios:/app/audios
+      - ./transcricoes:/app/transcricoes
+    depends_on:
+      - redis
+
+  worker:
+    build: .
+    command: python worker.py
+    depends_on:
+      - redis
+    volumes:
+      - ./audios:/app/audios
+      - ./transcricoes:/app/transcricoes
+      - ./temp:/app/temp
+      - ./models:/models
