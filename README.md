@@ -1,72 +1,139 @@
 # Audio Transcriber
 
-Transcrição automática de áudios em português usando [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (modelo `medium`, CPU, `int8`). Os áudios são enfileirados no Redis por um *producer* e processados em paralelo por um ou mais *workers*.
+Transcrição automática de áudios em português com [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (modelo `medium`, CPU, `int8`). O projeto tem duas formas de uso:
 
-## Como funciona
+| Modo | Para quem | Como roda |
+|------|-----------|-----------|
+| **Aplicativo Windows** | Usuários finais | Instalador `.exe`, interface gráfica, 100% offline |
+| **Fila com Docker** | Processamento em lote | Producer + workers + Redis |
 
-1. `producer.py` lê a pasta `audios/` e envia para a fila `audio_queue` (Redis) todo arquivo que ainda não tem `.txt` correspondente em `transcricoes/`.
-2. `worker.py` consome a fila, converte o áudio para WAV 16 kHz mono com `ffmpeg` (`src/converter.py`), transcreve com faster-whisper e grava `transcricoes/<nome>.txt`.
-3. Cada arquivo tem um lock distribuído no Redis (5 min) e até 3 tentativas antes de ser marcado como falha definitiva.
-
-Formatos aceitos pelo producer: `.mp3`, `.wav`, `.m4a`, `.flac`, `.ogg`.
+Documentação detalhada: [docs/ARQUITETURA.md](docs/ARQUITETURA.md) e [docs/BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md).
 
 ## Estrutura
 
 ```
-├── audios/            # entrada (ignorado pelo git)
-├── transcricoes/      # saída .txt (ignorado pelo git)
-├── temp/              # WAVs temporários (ignorado pelo git)
-├── models/            # cache do modelo Whisper (ignorado pelo git)
+├── app/
+│   └── window.py            # interface PySide6 (janela, fila, thread de trabalho)
 ├── src/
-│   ├── converter.py   # conversão via ffmpeg
-│   └── transcriber.py # processamento sequencial de um diretório
-├── producer.py        # enfileira os áudios
-├── worker.py          # consome a fila e transcreve
-├── main.py            # modo sem fila (CLI)
-├── Dockerfile
-└── docker-compose.yml
+│   ├── engine.py            # carga do modelo e transcrição de um arquivo (usado pelo app)
+│   ├── paths.py             # localiza modelo e ffmpeg (dev, Docker ou PyInstaller)
+│   ├── converter.py         # conversão para WAV 16 kHz mono via ffmpeg
+│   └── transcriber.py       # processamento sequencial de uma pasta (usado por main.py)
+├── assets/
+│   ├── make_icon.py         # gera icon.ico / icon.png
+│   ├── icon.ico
+│   └── icon.png
+├── installer/setup.iss      # script do instalador (Inno Setup)
+├── .github/workflows/build-windows.yml
+├── transcriber_app.py       # ponto de entrada do aplicativo Windows
+├── main.py                  # CLI sem fila
+├── producer.py / worker.py  # modo com fila (Redis)
+├── Dockerfile / docker-compose.yml
+├── requirements.txt         # modo Docker / CLI
+└── requirements-windows.txt # aplicativo Windows
 ```
 
-## Uso com Docker (recomendado)
+Pastas ignoradas pelo git: `audios/`, `transcricoes/`, `temp/`, `models/`, `dist/`, `build/`, `dist-installer/`, `ffmpeg/`, além de `*.zip`, `.claude/` e `.env*`.
 
-Pré-requisito: Docker e Docker Compose.
+---
+
+## Aplicativo para Windows
+
+Aplicativo desktop que funciona **sem internet**: o modelo Whisper `medium` e o ffmpeg vão embutidos no instalador.
+
+### Como o usuário usa
+
+1. Instalar com o `TranscritorDeAudio-Setup-<versão>.exe` (atalhos no menu Iniciar e na área de trabalho).
+2. Clicar em **Adicionar áudios...** ou arrastar arquivos para a lista.
+3. Acompanhar o status e o progresso de cada arquivo (na fila, transcrevendo, concluído, erro).
+4. Selecionar um arquivo concluído para ver o texto e usar **Copiar texto** ou **Baixar .txt**.
+5. **Limpar concluídos** remove da lista os arquivos já processados.
+
+Formatos aceitos: `.mp3`, `.wav`, `.m4a`, `.flac`, `.ogg`, `.mp4`, `.aac`, `.wma`, `.opus`.
+
+Os arquivos são processados um por vez. Se o usuário fechar a janela durante uma transcrição, o app pede confirmação e cancela o trabalho em andamento.
+
+**Desempenho de referência** (CPU, `int8`): num i7-13500 com 16 GB de RAM, a estimativa é de 1x a 2x a duração do áudio. No Linux, um áudio curto de WhatsApp levou cerca de 39 s. A primeira transcrição inclui alguns segundos para carregar o modelo.
+
+### Gerar o instalador (GitHub Actions)
+
+O workflow `build-windows.yml` roda em `windows-latest`:
+
+1. Instala Python 3.11 e as dependências de `requirements-windows.txt`.
+2. Baixa o modelo `Systran/faster-whisper-medium` para `models/medium`.
+3. Baixa o ffmpeg (build estático) para `ffmpeg/ffmpeg.exe`.
+4. Empacota com PyInstaller (modo `onedir`, sem console), incluindo ícone, ffmpeg e modelo.
+5. Gera o instalador com Inno Setup.
+6. Publica o `.exe` como *artifact* e, em tags `v*`, também em *Releases*.
+
+Como disparar:
+
+- **Manual:** aba *Actions* → *Build Windows* → *Run workflow*; o instalador fica em *Artifacts*.
+- **Release:** `git tag v1.0.0 && git push origin v1.0.0`.
+
+Passo a passo completo e solução de problemas em [docs/BUILD-WINDOWS.md](docs/BUILD-WINDOWS.md).
+
+### Rodar a interface em desenvolvimento
+
+```bash
+pip install -r requirements-windows.txt
+# coloque o modelo em models/medium (config.json, model.bin, tokenizer.json, vocabulary.*)
+# e tenha o ffmpeg no PATH (ou em ffmpeg/ffmpeg[.exe])
+python transcriber_app.py
+```
+
+### Ícone
+
+`assets/icon.ico` (16 a 256 px) mostra uma onda sonora sobre linhas de texto, em azul e branco. Para alterá-lo, edite `assets/make_icon.py` e rode `python assets/make_icon.py` (requer Pillow).
+
+---
+
+## Modo em lote com Docker (fila Redis)
+
+1. `producer.py` lê `audios/` e envia para a fila `audio_queue` todo arquivo que ainda não tem `.txt` em `transcricoes/`.
+2. `worker.py` consome a fila, converte para WAV 16 kHz mono, transcreve e grava `transcricoes/<nome>.txt`.
+3. Cada arquivo tem um lock distribuído no Redis (5 min) e até 3 tentativas antes de falha definitiva.
+
+Formatos do producer: `.mp3`, `.wav`, `.m4a`, `.flac`, `.ogg`.
 
 ```bash
 # 1. coloque os áudios em ./audios
-# 2. suba o Redis e os workers (escale conforme a CPU disponível)
 docker compose up -d redis
 docker compose up --build --scale worker=2 worker
 
-# 3. em outro terminal, enfileire os áudios
+# 2. em outro terminal, enfileire os áudios
 docker compose run --rm producer
 ```
 
-As transcrições aparecem em `./transcricoes`. Na primeira execução o modelo (~1,5 GB) é baixado para `./models`.
+Na primeira execução o modelo (~1,5 GB) é baixado para `./models`. Para reprocessar um áudio, apague o `.txt` correspondente e rode o producer de novo.
 
-Para reprocessar um áudio, apague o `.txt` correspondente e rode o producer novamente.
-
-## Modo sem fila
-
-`main.py` processa um diretório de forma sequencial, sem Redis:
+### CLI sem fila
 
 ```bash
 python main.py --input audios --output transcricoes --temp temp --model medium
 ```
 
-Requer `ffmpeg` instalado e `pip install -r requirements.txt`. Esse modo também aceita `.mp4` e usa filtro VAD. O caminho do cache do modelo está fixo em `/models`, então ele é pensado para rodar dentro do container.
+Requer `ffmpeg` e `pip install -r requirements.txt`. Também aceita `.mp4` e usa filtro VAD. O cache do modelo fica em `/models`, ou no diretório da variável de ambiente `MODELS_DIR`.
+
+---
 
 ## Configuração
 
-O idioma (`pt`), o modelo (`medium`) e o dispositivo (`cpu`, `int8`) estão definidos diretamente em `worker.py`. O host do Redis é `redis` (nome do serviço no compose).
+| Item | Onde | Valor |
+|------|------|-------|
+| Idioma | `src/engine.py`, `worker.py`, `src/transcriber.py` | `pt` |
+| Modelo | `src/engine.py` (`load_model`), `worker.py` | `medium` |
+| Dispositivo / precisão | idem | `cpu` / `int8` |
+| Threads de CPU (app) | `src/engine.py` | `max(4, núcleos - 2)` |
+| Cache do modelo (Docker/CLI) | variável `MODELS_DIR` | `/models` |
+| Host do Redis | `producer.py`, `worker.py` | `redis` |
+| Timeout do ffmpeg | `src/converter.py` | 600 s |
 
-## Aplicativo para Windows
+Para trocar o modelo no aplicativo Windows, altere `medium` em `src/engine.py`/`app/window.py` e o repositório baixado no workflow (por exemplo `Systran/faster-whisper-small`, ~480 MB, mais rápido e menos preciso).
 
-Aplicativo desktop (PySide6) que funciona **100% offline**: o modelo Whisper `medium` e o ffmpeg vão embutidos no instalador. O usuário adiciona ou arrasta áudios, acompanha o progresso e, para cada arquivo, copia o texto ou baixa o `.txt`.
+## Solução de problemas
 
-- Código: `transcriber_app.py` (entrada), `app/window.py` (interface) e `src/engine.py` (transcrição).
-- Ícone: `assets/icon.ico`, gerado por `python assets/make_icon.py`.
-- Build: o workflow `.github/workflows/build-windows.yml` roda em `windows-latest`, baixa o modelo e o ffmpeg, empacota com PyInstaller e gera o instalador com Inno Setup (`installer/setup.iss`).
-  - Manual: aba *Actions* → *Build Windows* → *Run workflow* (o instalador fica em *Artifacts*).
-  - Release: `git tag v1.0.0 && git push origin v1.0.0` publica o `Setup.exe` na aba *Releases*.
-
-Para rodar a interface em desenvolvimento: `pip install -r requirements-windows.txt && python transcriber_app.py` (com o modelo em `models/medium` e o ffmpeg no PATH).
+- **`Nenhuma fala detectada no áudio`**: o filtro VAD não encontrou fala (áudio mudo ou só ruído).
+- **`Falha ao carregar o modelo`** (app): a pasta `models/medium` não foi empacotada; confira o passo de download do modelo no workflow.
+- **ffmpeg não encontrado** (dev): instale o ffmpeg e coloque-o no PATH.
+- **Docker: worker não processa**: confirme que o Redis está de pé e que o producer enviou os arquivos (`[ENVIADO]` nos logs).
