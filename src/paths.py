@@ -16,5 +16,12 @@ def ffmpeg_path() -> str:
 
 
 def bundled_model_dir(name: str = "medium") -> Path | None:
-    path = resource_dir() / "models" / name
-    return path if (path / "model.bin").exists() else None
+    models = resource_dir() / "models"
+    direct = models / name
+    if (direct / "model.bin").exists():
+        return direct
+    cache = models / f"models--Systran--faster-whisper-{name}" / "snapshots"
+    for snap in sorted(cache.glob("*")) if cache.exists() else []:
+        if (snap / "model.bin").exists():
+            return snap
+    return None

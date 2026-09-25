@@ -7,7 +7,7 @@ from typing import Callable
 from faster_whisper import WhisperModel
 
 from .converter import convert_to_wav
-from .paths import bundled_model_dir
+from .paths import bundled_model_dir, resource_dir
 
 
 def load_model(name: str = "medium") -> WhisperModel:
@@ -21,12 +21,17 @@ def load_model(name: str = "medium") -> WhisperModel:
             cpu_threads=threads,
             local_files_only=True,
         )
+    download_root = os.environ.get("MODELS_DIR", "/models")
+    if not os.access(download_root, os.W_OK):
+        raise FileNotFoundError(
+            f"Modelo '{name}' não encontrado. Coloque-o em '{resource_dir() / 'models' / name}'."
+        )
     return WhisperModel(
         name,
         device="cpu",
         compute_type="int8",
         cpu_threads=threads,
-        download_root=os.environ.get("MODELS_DIR", "/models"),
+        download_root=download_root,
     )
 
 
