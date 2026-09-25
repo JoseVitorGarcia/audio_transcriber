@@ -1,0 +1,4 @@
+faster-whisper
+ctranslate2
+PySide6
+huggingface_hub

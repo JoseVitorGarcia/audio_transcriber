@@ -10,3 +10,10 @@ models/
 .claude/
 .env
 .env.*
+
+dist/
+build/
+dist-installer/
+*.spec
+ffmpeg/
+ffmpeg-tmp/

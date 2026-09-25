@@ -1,11 +1,12 @@
 import subprocess
 import os
+from .paths import ffmpeg_path
 
 def convert_to_wav(input_path: str, output_path: str):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     command = [
-        "ffmpeg",
+        ffmpeg_path(),
         "-y",
         "-i", input_path,
         "-vn",
@@ -21,7 +22,8 @@ def convert_to_wav(input_path: str, output_path: str):
         command,
         capture_output=True,
         text=True,
-        timeout=30
+        timeout=600,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
     if result.returncode != 0:

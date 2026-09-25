@@ -33,7 +33,7 @@ class AudioTranscriber:
             self.model_name,
             device="cpu",
             compute_type="int8",
-            download_root="/models"
+            download_root=os.environ.get("MODELS_DIR", "/models")
         )
 
         start_time = time.time()
